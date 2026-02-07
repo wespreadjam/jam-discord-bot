@@ -40,14 +40,16 @@ ROLE_NAMES = {
 
 # level thresholds: (xp_required, referrals_required)
 # user needs to meet EITHER the xp OR the referral threshold to level up
+# level thresholds (xp only, referrals grant 50 xp each)
 LEVEL_THRESHOLDS = {
-    1: {"xp": 100, "referrals": 1},
-    2: {"xp": 500, "referrals": 5},
-    3: {"xp": 1500, "referrals": 15},
+    1: {"xp": 100},
+    2: {"xp": 500},
+    3: {"xp": 1500},
 }
 
 XP_PER_MESSAGE = 1
 XP_BONUS_LONG_MESSAGE = 2       # bonus xp for messages with 50+ characters
+XP_PER_REFERRAL = 50            # xp earned when someone joins through your link
 XP_COOLDOWN_SECONDS = 60        # prevents spamming for xp
 IGNORED_PREFIXES = ("!", "/", "?", ".")  # ignore bot commands
 
@@ -175,12 +177,12 @@ def get_leaderboard(limit: int = 10) -> list[dict]:
 # Level calculation
 # ---------------------------------------------------------------------------
 
-def calculate_level(xp: int, referrals: int) -> int:
-    """determine the highest level a user qualifies for."""
+def calculate_level(xp: int, referrals: int = 0) -> int:
+    """determine the highest level a user qualifies for based on xp."""
     level = 0
     for lvl in sorted(LEVEL_THRESHOLDS.keys()):
         req = LEVEL_THRESHOLDS[lvl]
-        if xp >= req["xp"] or referrals >= req["referrals"]:
+        if xp >= req["xp"]:
             level = lvl
         else:
             break
@@ -401,11 +403,12 @@ async def on_member_join(member: discord.Member):
     if not success:
         return
 
-    # update referrer stats
+    # update referrer stats (grant xp + referral count)
     ref_user = get_user(referrer_id)
     new_referrals = ref_user["referrals"] + 1
-    new_level = calculate_level(ref_user["xp"], new_referrals)
-    update_user(referrer_id, referrals=new_referrals, level=new_level)
+    new_xp = ref_user["xp"] + XP_PER_REFERRAL
+    new_level = calculate_level(new_xp)
+    update_user(referrer_id, referrals=new_referrals, xp=new_xp, level=new_level)
 
     # announce
     channel = await get_referral_channel(guild)
@@ -415,7 +418,7 @@ async def on_member_join(member: discord.Member):
     if channel:
         await channel.send(
             f"🎉 **{member.display_name}** joined via **{referrer_name}**'s invite! "
-            f"{referrer_name} now has {new_referrals} referral(s)."
+            f"{referrer_name} earned {XP_PER_REFERRAL} xp and now has {new_referrals} referral(s)."
         )
 
     # check for level up
@@ -499,10 +502,8 @@ async def rank(interaction: discord.Interaction, member: discord.Member = None):
         if next_level in LEVEL_THRESHOLDS:
             next_req = LEVEL_THRESHOLDS[next_level]
             xp_progress = f"{user['xp']}/{next_req['xp']} xp"
-            ref_progress = f"{user['referrals']}/{next_req['referrals']} referrals"
         else:
             xp_progress = f"{user['xp']} xp (max level!)"
-            ref_progress = f"{user['referrals']} referrals"
 
         embed = discord.Embed(
             title=f"{emoji} {target.display_name}'s rank",
@@ -510,7 +511,7 @@ async def rank(interaction: discord.Interaction, member: discord.Member = None):
         )
         embed.add_field(name="level", value=f"{current_level} ({role_name})", inline=True)
         embed.add_field(name="xp", value=xp_progress, inline=True)
-        embed.add_field(name="referrals", value=ref_progress, inline=True)
+        embed.add_field(name="referrals", value=str(user["referrals"]), inline=True)
         embed.add_field(name="total messages", value=str(user["total_messages"]), inline=True)
         embed.set_thumbnail(url=target.display_avatar.url)
 
