@@ -1,4 +1,4 @@
-"""
+]"""
 Jam Bot - Discord Ranking System
 Tracks messages (XP) and referrals via invite links to assign roles automatically.
 
@@ -772,6 +772,40 @@ async def leaderboard(interaction: discord.Interaction):
         await interaction.followup.send(embed=embed)
     except Exception as e:
         print(f"error in /leaderboard: {e}")
+        await interaction.followup.send("something went wrong, check the logs!")
+
+
+@bot.tree.command(name="ref-leaderboard", description="see the top members by referrals")
+async def ref_leaderboard(interaction: discord.Interaction):
+    await interaction.response.defer()
+    try:
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("SELECT user_id, referrals, xp, level FROM users WHERE referrals > 0 ORDER BY referrals DESC LIMIT 10")
+        rows = c.fetchall()
+        conn.close()
+
+        if not rows:
+            await interaction.followup.send("no one has referred anyone yet!")
+            return
+
+        lines = []
+        medals = {0: "**1.**", 1: "**2.**", 2: "**3.**"}
+        for i, (user_id, referrals, xp, level) in enumerate(rows):
+            member = interaction.guild.get_member(user_id)
+            name = member.display_name if member else f"user {user_id}"
+            medal = medals.get(i, f"**{i+1}.**")
+            role_name = ROLE_NAMES.get(level, "unranked")
+            lines.append(f"{medal} **{name}** | {referrals} referrals | {xp} xp | {role_name}")
+
+        embed = discord.Embed(
+            title="referral leaderboard",
+            description="\n".join(lines),
+            color=discord.Color.green(),
+        )
+        await interaction.followup.send(embed=embed)
+    except Exception as e:
+        print(f"error in /ref-leaderboard: {e}")
         await interaction.followup.send("something went wrong, check the logs!")
 
 
