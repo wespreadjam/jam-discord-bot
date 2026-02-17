@@ -837,6 +837,38 @@ async def bread(interaction: discord.Interaction):
     await interaction.response.send_message(f"*{random.choice(breads)}*")
 
 
+@bot.tree.command(name="joined", description="Check when a member joined the server")
+@app_commands.describe(member="The member to check (leave blank for yourself)")
+async def joined(interaction: discord.Interaction, member: discord.Member = None):
+    await interaction.response.defer()
+    try:
+        target = member or interaction.user
+        
+        if target.joined_at:
+            # Unix timestamp for Discord dynamic formatting
+            timestamp = int(target.joined_at.timestamp())
+            
+            embed = discord.Embed(
+                title=f"Member Join Date",
+                description=f"Information for {target.mention}",
+                color=discord.Color.from_str("#748ffc")
+            )
+            embed.set_thumbnail(url=target.display_avatar.url)
+            
+            # Use Discord's timestamp formats: 
+            # F = Long Date/Time, R = Relative time (e.g., "5 months ago")
+            embed.add_field(name="Joined On", value=f"<t:{timestamp}:F>", inline=False)
+            embed.add_field(name="Duration", value=f"<t:{timestamp}:R>", inline=False)
+            
+            await interaction.followup.send(embed=embed)
+        else:
+            await interaction.followup.send("Could not retrieve join date for this member.")
+            
+    except Exception as e:
+        print(f"error in /joined: {e}")
+        await interaction.followup.send("An error occurred while fetching membership data.", ephemeral=True)
+
+
 @bot.tree.command(name="setxp", description="(admin) set a user's xp manually")
 @app_commands.describe(member="target user", xp="new xp value")
 @app_commands.checks.has_permissions(administrator=True)
