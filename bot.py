@@ -17,13 +17,16 @@ Referrals:
   - no limit on how many people you can refer
 """
 
+import asyncio
 import os
 import time
 import discord
 from discord import app_commands
 from discord.ext import commands
 import psycopg2
+from psycopg2 import pool as pg_pool
 from psycopg2 import sql
+from contextlib import contextmanager
 
 # ---------------------------------------------------------------------------
 # Configuration - edit these to customize your bot
@@ -81,121 +84,127 @@ REFERRAL_CHANNEL_NAME = "commands"
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 
+db_pool: pg_pool.SimpleConnectionPool | None = None
+
+
+def init_pool():
+    global db_pool
+    if db_pool is None:
+        db_pool = pg_pool.SimpleConnectionPool(1, 10, DATABASE_URL)
+
+
+@contextmanager
 def get_conn():
-    return psycopg2.connect(DATABASE_URL)
+    init_pool()
+    conn = db_pool.getconn()
+    try:
+        yield conn
+    finally:
+        db_pool.putconn(conn)
 
 
 def init_db():
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id BIGINT PRIMARY KEY,
-            xp INTEGER DEFAULT 0,
-            level INTEGER DEFAULT 0,
-            referrals INTEGER DEFAULT 0,
-            total_messages INTEGER DEFAULT 0
-        )
-    """)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS referral_log (
-            id SERIAL PRIMARY KEY,
-            referrer_id BIGINT NOT NULL,
-            referred_id BIGINT NOT NULL UNIQUE,
-            timestamp DOUBLE PRECISION NOT NULL
-        )
-    """)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS invite_owners (
-            invite_code TEXT PRIMARY KEY,
-            user_id BIGINT NOT NULL
-        )
-    """)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS onboarding_progress (
-            user_id BIGINT NOT NULL,
-            channel_name TEXT NOT NULL,
-            completed_at DOUBLE PRECISION NOT NULL,
-            PRIMARY KEY (user_id, channel_name)
-        )
-    """)
-    conn.commit()
-    conn.close()
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id BIGINT PRIMARY KEY,
+                xp INTEGER DEFAULT 0,
+                level INTEGER DEFAULT 0,
+                referrals INTEGER DEFAULT 0,
+                total_messages INTEGER DEFAULT 0
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS referral_log (
+                id SERIAL PRIMARY KEY,
+                referrer_id BIGINT NOT NULL,
+                referred_id BIGINT NOT NULL UNIQUE,
+                timestamp DOUBLE PRECISION NOT NULL
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS invite_owners (
+                invite_code TEXT PRIMARY KEY,
+                user_id BIGINT NOT NULL
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS onboarding_progress (
+                user_id BIGINT NOT NULL,
+                channel_name TEXT NOT NULL,
+                completed_at DOUBLE PRECISION NOT NULL,
+                PRIMARY KEY (user_id, channel_name)
+            )
+        """)
+        conn.commit()
 
 
 def get_user(user_id: int) -> dict:
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute("SELECT user_id, xp, level, referrals, total_messages FROM users WHERE user_id = %s", (user_id,))
-    row = c.fetchone()
-    if row is None:
-        c.execute("INSERT INTO users (user_id) VALUES (%s)", (user_id,))
-        conn.commit()
-        conn.close()
-        return {"user_id": user_id, "xp": 0, "level": 0, "referrals": 0, "total_messages": 0}
-    conn.close()
-    return {"user_id": row[0], "xp": row[1], "level": row[2], "referrals": row[3], "total_messages": row[4]}
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute("SELECT user_id, xp, level, referrals, total_messages FROM users WHERE user_id = %s", (user_id,))
+        row = c.fetchone()
+        if row is None:
+            c.execute("INSERT INTO users (user_id) VALUES (%s)", (user_id,))
+            conn.commit()
+            return {"user_id": user_id, "xp": 0, "level": 0, "referrals": 0, "total_messages": 0}
+        return {"user_id": row[0], "xp": row[1], "level": row[2], "referrals": row[3], "total_messages": row[4]}
 
 
 def update_user(user_id: int, **kwargs):
-    conn = get_conn()
-    c = conn.cursor()
-    sets = ", ".join(f"{k} = %s" for k in kwargs)
-    vals = list(kwargs.values()) + [user_id]
-    c.execute(f"UPDATE users SET {sets} WHERE user_id = %s", vals)
-    conn.commit()
-    conn.close()
+    with get_conn() as conn:
+        c = conn.cursor()
+        sets = ", ".join(f"{k} = %s" for k in kwargs)
+        vals = list(kwargs.values()) + [user_id]
+        c.execute(f"UPDATE users SET {sets} WHERE user_id = %s", vals)
+        conn.commit()
 
 
 def add_referral(referrer_id: int, referred_id: int) -> bool:
     """returns True if referral was recorded, False if already exists."""
-    conn = get_conn()
-    c = conn.cursor()
-    try:
-        c.execute(
-            "INSERT INTO referral_log (referrer_id, referred_id, timestamp) VALUES (%s, %s, %s)",
-            (referrer_id, referred_id, time.time()),
-        )
-        conn.commit()
-        conn.close()
-        return True
-    except psycopg2.IntegrityError:
-        conn.rollback()
-        conn.close()
-        return False
+    with get_conn() as conn:
+        c = conn.cursor()
+        try:
+            c.execute(
+                "INSERT INTO referral_log (referrer_id, referred_id, timestamp) VALUES (%s, %s, %s)",
+                (referrer_id, referred_id, time.time()),
+            )
+            conn.commit()
+            return True
+        except psycopg2.IntegrityError:
+            conn.rollback()
+            return False
 
 
 def save_invite_owner(invite_code: str, user_id: int):
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute(
-        """INSERT INTO invite_owners (invite_code, user_id) VALUES (%s, %s)
-           ON CONFLICT (invite_code) DO UPDATE SET user_id = EXCLUDED.user_id""",
-        (invite_code, user_id),
-    )
-    conn.commit()
-    conn.close()
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute(
+            """INSERT INTO invite_owners (invite_code, user_id) VALUES (%s, %s)
+               ON CONFLICT (invite_code) DO UPDATE SET user_id = EXCLUDED.user_id""",
+            (invite_code, user_id),
+        )
+        conn.commit()
 
 
 def get_invite_owner(invite_code: str) -> int | None:
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute("SELECT user_id FROM invite_owners WHERE invite_code = %s", (invite_code,))
-    row = c.fetchone()
-    conn.close()
-    return row[0] if row else None
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute("SELECT user_id FROM invite_owners WHERE invite_code = %s", (invite_code,))
+        row = c.fetchone()
+        return row[0] if row else None
 
 
 def get_leaderboard(limit: int = 10) -> list[dict]:
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute("SELECT user_id, xp, level, referrals, total_messages FROM users ORDER BY xp DESC LIMIT %s", (limit,))
-    rows = c.fetchall()
-    conn.close()
-    return [
-        {"user_id": r[0], "xp": r[1], "level": r[2], "referrals": r[3], "total_messages": r[4]}
-        for r in rows
-    ]
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute("SELECT user_id, xp, level, referrals, total_messages FROM users ORDER BY xp DESC LIMIT %s", (limit,))
+        rows = c.fetchall()
+        return [
+            {"user_id": r[0], "xp": r[1], "level": r[2], "referrals": r[3], "total_messages": r[4]}
+            for r in rows
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -203,25 +212,23 @@ def get_leaderboard(limit: int = 10) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def mark_channel_done(user_id: int, channel_name: str):
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute(
-        """INSERT INTO onboarding_progress (user_id, channel_name, completed_at)
-           VALUES (%s, %s, %s)
-           ON CONFLICT (user_id, channel_name) DO NOTHING""",
-        (user_id, channel_name, time.time()),
-    )
-    conn.commit()
-    conn.close()
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute(
+            """INSERT INTO onboarding_progress (user_id, channel_name, completed_at)
+               VALUES (%s, %s, %s)
+               ON CONFLICT (user_id, channel_name) DO NOTHING""",
+            (user_id, channel_name, time.time()),
+        )
+        conn.commit()
 
 
 def get_completed_channels(user_id: int) -> set:
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute("SELECT channel_name FROM onboarding_progress WHERE user_id = %s", (user_id,))
-    rows = c.fetchall()
-    conn.close()
-    return {r[0] for r in rows}
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute("SELECT channel_name FROM onboarding_progress WHERE user_id = %s", (user_id,))
+        rows = c.fetchall()
+        return {r[0] for r in rows}
 
 
 def is_onboarding_complete(user_id: int) -> bool:
@@ -233,7 +240,7 @@ def is_onboarding_complete(user_id: int) -> bool:
 # Level calculation
 # ---------------------------------------------------------------------------
 
-def calculate_level(xp: int, referrals: int = 0) -> int:
+def calculate_level(xp: int) -> int:
     """determine the highest level a user qualifies for based on xp."""
     level = 0
     for lvl in sorted(LEVEL_THRESHOLDS.keys()):
@@ -261,6 +268,7 @@ xp_cooldowns: dict[int, float] = {}
 
 # cached invite uses per guild: {guild_id: {invite_code: uses}}
 invite_cache: dict[int, dict[str, int]] = {}
+invite_lock = asyncio.Lock()
 
 
 async def sync_roles(member: discord.Member, new_level: int):
@@ -306,11 +314,10 @@ async def ensure_invite_link(member: discord.Member) -> str | None:
         return None
 
     # check if they already have one in the db
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute("SELECT invite_code FROM invite_owners WHERE user_id = %s", (member.id,))
-    row = c.fetchone()
-    conn.close()
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute("SELECT invite_code FROM invite_owners WHERE user_id = %s", (member.id,))
+        row = c.fetchone()
 
     if row:
         # verify the invite still exists on discord (it may have been deleted)
@@ -454,22 +461,23 @@ async def on_invite_delete(invite: discord.Invite):
 async def on_member_join(member: discord.Member):
     """detect which invite was used by comparing before/after use counts."""
     guild = member.guild
-    old_cache = invite_cache.get(guild.id, {})
 
-    try:
-        new_invites = await guild.invites()
-    except discord.Forbidden:
-        return
+    async with invite_lock:
+        old_cache = invite_cache.get(guild.id, {})
 
-    used_invite = None
-    for inv in new_invites:
-        old_uses = old_cache.get(inv.code, 0)
-        if inv.uses > old_uses:
-            used_invite = inv
-            break
+        try:
+            new_invites = await guild.invites()
+        except discord.Forbidden:
+            return
 
-    # update the cache
-    invite_cache[guild.id] = {inv.code: inv.uses for inv in new_invites}
+        used_invite = None
+        for inv in new_invites:
+            old_uses = old_cache.get(inv.code, 0)
+            if inv.uses > old_uses:
+                used_invite = inv
+                break
+
+        invite_cache[guild.id] = {inv.code: inv.uses for inv in new_invites}
 
     if used_invite is None:
         return
@@ -526,7 +534,6 @@ async def on_member_join(member: discord.Member):
 @bot.event
 async def on_thread_create(thread: discord.Thread):
     """auto-archive threads in specified channels to keep the sidebar clean."""
-    import asyncio
     parent = thread.parent
     if parent and parent.name in AUTO_ARCHIVE_CHANNELS:
         # wait a bit so the thread creator can see their post
@@ -610,7 +617,7 @@ async def on_message(message: discord.Message):
     user = get_user(user_id)
     new_xp = user["xp"] + xp_earned
     new_messages = user["total_messages"] + 1
-    new_level = calculate_level(new_xp, user["referrals"])
+    new_level = calculate_level(new_xp)
 
     update_user(user_id, xp=new_xp, total_messages=new_messages, level=new_level)
 
@@ -714,14 +721,13 @@ async def myreferrals(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     try:
         user_id = interaction.user.id
-        conn = get_conn()
-        c = conn.cursor()
-        c.execute(
-            "SELECT referred_id, timestamp FROM referral_log WHERE referrer_id = %s ORDER BY timestamp DESC LIMIT 20",
-            (user_id,),
-        )
-        rows = c.fetchall()
-        conn.close()
+        with get_conn() as conn:
+            c = conn.cursor()
+            c.execute(
+                "SELECT referred_id, timestamp FROM referral_log WHERE referrer_id = %s ORDER BY timestamp DESC LIMIT 20",
+                (user_id,),
+            )
+            rows = c.fetchall()
 
         if not rows:
             await interaction.followup.send("you haven't referred anyone yet! use `/mylink` to get your invite link.")
@@ -779,11 +785,10 @@ async def leaderboard(interaction: discord.Interaction):
 async def ref_leaderboard(interaction: discord.Interaction):
     await interaction.response.defer()
     try:
-        conn = get_conn()
-        c = conn.cursor()
-        c.execute("SELECT user_id, referrals, xp, level FROM users WHERE referrals > 0 ORDER BY referrals DESC LIMIT 10")
-        rows = c.fetchall()
-        conn.close()
+        with get_conn() as conn:
+            c = conn.cursor()
+            c.execute("SELECT user_id, referrals, xp, level FROM users WHERE referrals > 0 ORDER BY referrals DESC LIMIT 10")
+            rows = c.fetchall()
 
         if not rows:
             await interaction.followup.send("no one has referred anyone yet!")
@@ -839,7 +844,7 @@ async def setxp(interaction: discord.Interaction, member: discord.Member, xp: in
     await interaction.response.defer(ephemeral=True)
     try:
         user = get_user(member.id)
-        new_level = calculate_level(xp, user["referrals"])
+        new_level = calculate_level(xp)
         update_user(member.id, xp=xp, level=new_level)
         await sync_roles(member, new_level)
         await interaction.followup.send(
@@ -857,7 +862,7 @@ async def setreferrals(interaction: discord.Interaction, member: discord.Member,
     await interaction.response.defer(ephemeral=True)
     try:
         user = get_user(member.id)
-        new_level = calculate_level(user["xp"], referrals)
+        new_level = calculate_level(user["xp"])
         update_user(member.id, referrals=referrals, level=new_level)
         await sync_roles(member, new_level)
         await interaction.followup.send(
