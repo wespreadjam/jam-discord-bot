@@ -1039,9 +1039,10 @@ async def eight_ball(interaction: discord.Interaction, question: str):
     answer = random.choice(responses)
     embed = discord.Embed(
         title="\U0001f3b1 magic 8-ball",
-        description=f"*{answer}*",
         color=discord.Color.dark_purple(),
     )
+    embed.add_field(name="question", value=question, inline=False)
+    embed.add_field(name="answer", value=f"*{answer}*", inline=False)
     embed.set_footer(text=f"asked by {interaction.user.display_name}")
     await interaction.response.send_message(embed=embed)
 
