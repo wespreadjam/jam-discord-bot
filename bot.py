@@ -23,6 +23,7 @@ import time
 import random
 import hmac
 import hashlib
+from datetime import datetime, timezone
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -1077,6 +1078,127 @@ async def link_github_cmd(interaction: discord.Interaction, github_username: str
 async def am_i_jam(interaction: discord.Interaction):
     result = random.choice(["You're the bread to my jam", "everyone is jam in their own way, but you, you'll always remain my bread"])
     await interaction.response.send_message(result)
+
+
+@bot.tree.command(name="serverinfo", description="display server stats (members, channels, boosts, and more)")
+async def serverinfo(interaction: discord.Interaction):
+    await interaction.response.defer()
+    try:
+        guild = interaction.guild
+        if guild is None:
+            await interaction.followup.send("this only works in a server!", ephemeral=True)
+            return
+
+        # member counts
+        total_members = guild.member_count
+        humans = sum(1 for m in guild.members if not m.bot)
+        bots = sum(1 for m in guild.members if m.bot)
+
+        # channel counts
+        text_channels = len(guild.text_channels)
+        voice_channels = len(guild.voice_channels)
+        categories = len(guild.categories)
+        forums = len(guild.forums)
+        stage_channels = len(guild.stage_channels)
+
+        # server creation timestamp
+        created_ts = int(guild.created_at.timestamp())
+
+        embed = discord.Embed(
+            title=f"{guild.name}",
+            description=guild.description or "",
+            color=discord.Color.from_str("#ff6b6b"),
+        )
+
+        if guild.icon:
+            embed.set_thumbnail(url=guild.icon.url)
+
+        embed.add_field(
+            name="members",
+            value=(
+                f"total: **{total_members}**\n"
+                f"humans: **{humans}** | bots: **{bots}**"
+            ),
+            inline=True,
+        )
+
+        embed.add_field(
+            name="channels",
+            value=(
+                f"text: **{text_channels}** | voice: **{voice_channels}**\n"
+                f"forums: **{forums}** | stage: **{stage_channels}**\n"
+                f"categories: **{categories}**"
+            ),
+            inline=True,
+        )
+
+        embed.add_field(
+            name="boosts",
+            value=f"level **{guild.premium_tier}** ({guild.premium_subscription_count} boosts)",
+            inline=True,
+        )
+
+        embed.add_field(name="owner", value=f"{guild.owner.mention}" if guild.owner else "unknown", inline=True)
+        embed.add_field(name="roles", value=str(len(guild.roles) - 1), inline=True)  # -1 to exclude @everyone
+        embed.add_field(name="verification", value=str(guild.verification_level).replace("_", " "), inline=True)
+        embed.add_field(name="created", value=f"<t:{created_ts}:F> (<t:{created_ts}:R>)", inline=False)
+
+        if guild.banner:
+            embed.set_image(url=guild.banner.url)
+
+        embed.set_footer(text=f"server id: {guild.id}")
+
+        await interaction.followup.send(embed=embed)
+    except Exception as e:
+        print(f"error in /serverinfo: {e}")
+        await interaction.followup.send("something went wrong, check the logs!", ephemeral=True)
+
+
+@bot.tree.command(name="countdown", description="start a countdown embed to an upcoming event")
+@app_commands.describe(
+    event="name of the event",
+    date="event date and time in YYYY-MM-DD HH:MM format (UTC)",
+)
+async def countdown(interaction: discord.Interaction, event: str, date: str):
+    await interaction.response.defer()
+    try:
+        if len(event) > 253:  # embed title limit is 256, "📅 " takes 3 chars
+            await interaction.followup.send(
+                "event name is too long! keep it under 253 characters.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            event_dt = datetime.strptime(date, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+        except ValueError:
+            await interaction.followup.send(
+                "invalid date format! use **YYYY-MM-DD HH:MM** (e.g. `2026-04-01 18:00`)",
+                ephemeral=True,
+            )
+            return
+
+        now = datetime.now(timezone.utc)
+        if event_dt <= now:
+            await interaction.followup.send("that date is in the past!", ephemeral=True)
+            return
+
+        event_ts = int(event_dt.timestamp())
+
+        embed = discord.Embed(
+            title=f"\U0001f4c5 {event}",
+            description=(
+                f"**starts:** <t:{event_ts}:F>\n"
+                f"**countdown:** <t:{event_ts}:R>"
+            ),
+            color=discord.Color.from_str("#748ffc"),
+        )
+        embed.set_footer(text=f"created by {interaction.user.display_name}")
+
+        await interaction.followup.send(embed=embed)
+    except Exception as e:
+        print(f"error in /countdown: {e}")
+        await interaction.followup.send("something went wrong, check the logs!", ephemeral=True)
 
 
 @bot.tree.command(name="8ball", description="ask the magic 8-ball a question")
