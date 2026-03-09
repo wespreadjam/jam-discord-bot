@@ -62,6 +62,8 @@ every message earns **10 xp** (with a 60-second cooldown so you can't spam your 
 | `/leaderboard` | top 10 members by xp |
 | `/ref-leaderboard` | top 10 members by referrals |
 | `/joined` | check when a member joined the server |
+| `/serverinfo` | display server stats (members, channels, boosts, and more) |
+| `/countdown` | start a countdown embed to an upcoming event |
 | `/bread` | receive a random bread blessing |
 | `/am-i-jam` | deep philosophical question |
 | `/link-github` | link your github account to be tagged in PR merges |
@@ -138,6 +140,8 @@ a magic 8-ball with 20 possible responses — some positive, some uncertain, som
 - **onboarding gate** — new members must post in #intros and #projects to get verified
 - **thread management** — auto-archives threads in specified channels to keep things tidy
 - **welcome system** — dms new members with onboarding info and their personal referral link
+- **server info** — rich embed showing member counts, channel breakdown, boost level, roles, and creation date
+- **event countdowns** — post a live countdown embed for any upcoming event using discord's dynamic timestamps
 - **github webhooks** — automatically announce merged PRs to a channel and ping the author
 
 ## setup
