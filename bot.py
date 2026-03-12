@@ -100,8 +100,8 @@ PR_ANNOUNCEMENT_CHANNEL_NAME = os.getenv("PR_ANNOUNCEMENT_CHANNEL_NAME", "testin
 # ---------------------------------------------------------------------------
 # Showcase Submission Configuration
 # ---------------------------------------------------------------------------
-# This bot submits projects to a separate showcase API using authenticated JSON.
-# Configure the API URL and bearer token in the environment to enable /showcase-project.
+# This bot submits projects to a separate showcase API using plain JSON.
+# Configure the API URL in the environment to enable /showcase-project.
 
 # ---------------------------------------------------------------------------
 # Database setup (PostgreSQL)

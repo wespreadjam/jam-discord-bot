@@ -161,7 +161,7 @@ a magic 8-ball with 20 possible responses — some positive, some uncertain, som
 when the user submits, the bot:
 
 1. builds a structured payload with guild, channel, member, and project metadata
-2. sends that payload to your separate showcase API with a bearer token
+2. sends that payload to your separate showcase API as JSON
 3. returns an ephemeral confirmation to the member
 
 ### api contract
@@ -201,7 +201,7 @@ headers:
 - `Content-Type: application/json`
 - `X-Showcase-Request-Id: ...` for request tracing
 
-the separate showcase API can validate, sanitize, and insert that payload server-side, and can optionally return JSON like:
+the separate showcase API can validate, sanitize, rate-limit, and insert that payload server-side, and can optionally return JSON like:
 
 ```json
 {
