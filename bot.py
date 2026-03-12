@@ -32,17 +32,13 @@ from psycopg2 import pool as pg_pool
 from psycopg2 import sql
 from contextlib import contextmanager
 from aiohttp import web
-
-from showcase import (
-    configure_showcase,
-    delete_showcase_document,
-    get_showcase_route,
-    init_showcase_index,
-    register_showcase_routes,
-    should_sync_on_start,
-    showcase_enabled,
-    sync_showcase_for_guild,
-    upsert_showcase_message,
+from showcase_submission import (
+    build_showcase_payload,
+    get_showcase_public_url,
+    is_valid_showcase_url,
+    parse_showcase_tags,
+    showcase_submission_enabled,
+    submit_showcase_payload,
 )
 
 # ---------------------------------------------------------------------------
@@ -100,6 +96,12 @@ REFERRAL_CHANNEL_NAME = "commands"
 GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "")
 # Channel where PR merges will be announced
 PR_ANNOUNCEMENT_CHANNEL_NAME = os.getenv("PR_ANNOUNCEMENT_CHANNEL_NAME", "testing-announcements")
+
+# ---------------------------------------------------------------------------
+# Showcase Submission Configuration
+# ---------------------------------------------------------------------------
+# This bot submits projects to a separate showcase API using encrypted payloads.
+# Configure the API URL and Fernet key in the environment to enable /showcase-project.
 
 # ---------------------------------------------------------------------------
 # Database setup (PostgreSQL)
@@ -319,24 +321,128 @@ xp_cooldowns: dict[int, float] = {}
 # cached invite uses per guild: {guild_id: {invite_code: uses}}
 invite_cache: dict[int, dict[str, int]] = {}
 invite_lock = asyncio.Lock()
-showcase_startup_sync_done = False
 
 
-async def run_startup_showcase_sync():
-    global showcase_startup_sync_done
-    if showcase_startup_sync_done or not should_sync_on_start():
-        return
+class ShowcaseProjectModal(discord.ui.Modal, title="Submit a Project"):
+    project_name = discord.ui.TextInput(
+        label="Project name",
+        placeholder="Jam AI Copilot",
+        max_length=80,
+    )
+    description = discord.ui.TextInput(
+        label="What does it do?",
+        placeholder="A short summary people will see in the showcase.",
+        style=discord.TextStyle.paragraph,
+        max_length=500,
+    )
+    github_url = discord.ui.TextInput(
+        label="GitHub URL",
+        placeholder="https://github.com/you/repo",
+        required=False,
+        max_length=200,
+    )
+    live_url = discord.ui.TextInput(
+        label="Live or demo URL",
+        placeholder="https://your-project.com",
+        required=False,
+        max_length=200,
+    )
+    tags = discord.ui.TextInput(
+        label="Tags",
+        placeholder="ai, automation, react",
+        required=False,
+        max_length=120,
+    )
 
-    showcase_startup_sync_done = True
-    for guild in bot.guilds:
-        try:
-            stats = await sync_showcase_for_guild(guild)
-            print(
-                f"showcase sync complete for {guild.name}: "
-                f"{stats['indexed']} indexed from {stats['scanned']} scanned"
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "this command only works inside a server.",
+                ephemeral=True,
             )
+            return
+
+        if not showcase_submission_enabled():
+            await interaction.response.send_message(
+                "showcase submissions are not configured yet. ask an admin to set the showcase API env vars.",
+                ephemeral=True,
+            )
+            return
+
+        project_name = self.project_name.value.strip()
+        description = self.description.value.strip()
+        github_url = self.github_url.value.strip() or None
+        live_url = self.live_url.value.strip() or None
+        tags = parse_showcase_tags(self.tags.value.strip())
+
+        if not project_name:
+            await interaction.response.send_message(
+                "please add a project name before submitting.",
+                ephemeral=True,
+            )
+            return
+
+        if not description:
+            await interaction.response.send_message(
+                "please add a short project description before submitting.",
+                ephemeral=True,
+            )
+            return
+
+        if github_url and not is_valid_showcase_url(github_url):
+            await interaction.response.send_message(
+                "your GitHub URL must start with `http://` or `https://`.",
+                ephemeral=True,
+            )
+            return
+
+        if live_url and not is_valid_showcase_url(live_url):
+            await interaction.response.send_message(
+                "your live/demo URL must start with `http://` or `https://`.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        try:
+            payload = build_showcase_payload(
+                guild_id=interaction.guild.id,
+                guild_name=interaction.guild.name,
+                channel_id=interaction.channel_id,
+                channel_name=getattr(interaction.channel, "name", "unknown"),
+                user_id=interaction.user.id,
+                username=interaction.user.name,
+                display_name=interaction.user.display_name,
+                avatar_url=str(interaction.user.display_avatar.url),
+                project_name=project_name,
+                description=description,
+                github_url=github_url,
+                live_url=live_url,
+                tags=tags,
+            )
+            result = await submit_showcase_payload(payload)
         except Exception as e:
-            print(f"showcase sync failed for {guild.name}: {e}")
+            print(f"error in /showcase-project submission: {e}")
+            await interaction.followup.send(
+                "could not submit your project to the showcase API. ask an admin to check the bot logs and showcase env vars.",
+                ephemeral=True,
+            )
+            return
+
+        response_url = result.get("project_url") or result.get("url")
+        submission_id = result.get("submission_id") or result.get("id")
+        public_url = get_showcase_public_url()
+
+        lines = [f"submitted **{project_name}** to the showcase queue."]
+        if submission_id:
+            lines.append(f"submission id: `{submission_id}`")
+        if response_url:
+            lines.append(f"submission url: {response_url}")
+        elif public_url:
+            lines.append(f"showcase: {public_url}")
+
+        await interaction.followup.send("\n".join(lines), ephemeral=True)
 
 
 async def sync_roles(member: discord.Member, new_level: int):
@@ -497,11 +603,6 @@ async def dm_welcome(member: discord.Member, invite_url: str = None):
 @bot.event
 async def on_ready():
     init_db()
-    configure_showcase(bot)
-    try:
-        init_showcase_index()
-    except Exception as e:
-        print(f"failed to initialize showcase index: {e}")
     # cache invites for all guilds
     for guild in bot.guilds:
         await cache_invites(guild)
@@ -510,8 +611,6 @@ async def on_ready():
         print(f"synced {len(synced)} slash commands")
     except Exception as e:
         print(f"failed to sync commands: {e}")
-    if should_sync_on_start():
-        bot.loop.create_task(run_startup_showcase_sync())
     print(f"jam bot is online as {bot.user}")
 
 
@@ -646,12 +745,6 @@ async def on_message(message: discord.Message):
         await bot.process_commands(message)
         return
 
-    if showcase_enabled():
-        try:
-            await upsert_showcase_message(message)
-        except Exception as e:
-            print(f"showcase index failed for message {message.id}: {e}")
-
     user_id = message.author.id
     member = guild.get_member(user_id)
 
@@ -724,26 +817,6 @@ async def on_message(message: discord.Message):
             await sync_roles(member, new_level)
 
     await bot.process_commands(message)
-
-
-@bot.event
-async def on_message_edit(before: discord.Message, after: discord.Message):
-    if after.author.bot:
-        return
-    if showcase_enabled():
-        try:
-            await upsert_showcase_message(after)
-        except Exception as e:
-            print(f"showcase reindex failed for message {after.id}: {e}")
-
-
-@bot.event
-async def on_raw_message_delete(payload: discord.RawMessageDeleteEvent):
-    if showcase_enabled():
-        try:
-            delete_showcase_document(payload.message_id)
-        except Exception as e:
-            print(f"showcase delete failed for message {payload.message_id}: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -1217,52 +1290,27 @@ async def serverinfo(interaction: discord.Interaction):
         await interaction.followup.send("something went wrong, check the logs!", ephemeral=True)
 
 
-@bot.tree.command(name="sync-showcase", description="(admin) index project posts into the showcase search index")
-@app_commands.describe(limit="max messages to scan per tracked channel, or 0 for full history")
-@app_commands.checks.has_permissions(administrator=True)
-async def sync_showcase(interaction: discord.Interaction, limit: int = 0):
-    await interaction.response.defer(ephemeral=True)
+@bot.tree.command(
+    name="showcase-project",
+    description="submit your project to the external showcase"
+)
+@app_commands.guild_only()
+async def showcase_project(interaction: discord.Interaction):
     if interaction.guild is None:
-        await interaction.followup.send("this only works in a server!", ephemeral=True)
-        return
-
-    if not showcase_enabled():
-        await interaction.followup.send(
-            "showcase search is disabled. set `ELASTICSEARCH_URL` (and auth if needed) first.",
+        await interaction.response.send_message(
+            "this command only works in a server.",
             ephemeral=True,
         )
         return
 
-    try:
-        stats = await sync_showcase_for_guild(interaction.guild, limit=limit or None)
-        route = get_showcase_route(interaction.guild.id)
-        await interaction.followup.send(
-            (
-                f"indexed **{stats['indexed']}** project messages from **{stats['scanned']}** scanned messages "
-                f"across **{stats['channels']}** tracked channel(s).\n"
-                f"dashboard: {route}\n"
-                f"missing channels: {', '.join(stats['missing']) if stats['missing'] else 'none'}"
-            ),
+    if not showcase_submission_enabled():
+        await interaction.response.send_message(
+            "showcase submissions are not configured yet. ask an admin to set the showcase API env vars.",
             ephemeral=True,
         )
-    except Exception as e:
-        print(f"error in /sync-showcase: {e}")
-        await interaction.followup.send("showcase sync failed. check the logs.", ephemeral=True)
-
-
-@bot.tree.command(name="showcase-link", description="get the project showcase dashboard link")
-async def showcase_link(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    if interaction.guild is None:
-        await interaction.followup.send("this only works in a server!", ephemeral=True)
         return
 
-    route = get_showcase_route(interaction.guild.id)
-    status = "enabled" if showcase_enabled() else "disabled until Elasticsearch is configured"
-    await interaction.followup.send(
-        f"showcase route: {route}\nstatus: {status}",
-        ephemeral=True,
-    )
+    await interaction.response.send_modal(ShowcaseProjectModal())
 
 
 @bot.tree.command(name="countdown", description="start a countdown embed to an upcoming event")
@@ -1399,7 +1447,6 @@ async def github_webhook(request):
 async def web_server():
     app = web.Application()
     app.router.add_post("/github-webhook", github_webhook)
-    register_showcase_routes(app)
     runner = web.AppRunner(app)
     await runner.setup()
     

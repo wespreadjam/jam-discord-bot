@@ -11,7 +11,7 @@
 [![discord.py](https://img.shields.io/badge/discord.py-2.3.0+-5865F2?style=flat-square&logo=discord&logoColor=white)](https://discordpy.readthedocs.io)
 [![postgres](https://img.shields.io/badge/postgresql-4169E1?style=flat-square&logo=postgresql&logoColor=white)](https://postgresql.org)
 
-*a community engagement bot with referrals, levels, onboarding, github webhooks, and a searchable project showcase*
+*a community engagement bot with referrals, levels, onboarding, github webhooks, and project submissions*
 
 [join the discord](https://discord.gg/5sdGUP4pG5) · [report a bug](https://github.com/wespreadjam/jam-discord-bot/issues) · [request a feature](https://github.com/wespreadjam/jam-discord-bot/issues)
 
@@ -25,7 +25,7 @@ jam bot is a discord bot that gamifies your community. it tracks messages, award
 
 it also handles onboarding. new members have to introduce themselves and share a project before they get verified. no lurkers allowed.
 
-it now also indexes your showcase channels into elasticsearch and powers a searchable project dashboard.
+this version also includes `/showcase-project`, a slash command that opens a modal and sends an encrypted project submission to a separate showcase backend that you host elsewhere.
 
 ## how it works
 
@@ -60,8 +60,8 @@ every message earns **10 xp** with a 60-second cooldown to prevent spam. message
 | `/countdown` | post a countdown embed for an upcoming event |
 | `/bread` | receive a random bread blessing |
 | `/am-i-jam` | ask the bot a deeply important question |
-| `/link-github` | link your github account to be tagged in merged PR announcements |
-| `/showcase-link` | get the project showcase dashboard URL |
+| `/link-github` | link your github account to merged PR announcements |
+| `/showcase-project` | submit a project to the external showcase API |
 
 ### admin commands
 
@@ -71,7 +71,6 @@ every message earns **10 xp** with a 60-second cooldown to prevent spam. message
 | `/setreferrals` | manually set a user's referral count |
 | `/setup-welcome` | post the welcome embeds |
 | `/test-welcome` | dm yourself the welcome message |
-| `/sync-showcase` | backfill tracked showcase channels into elasticsearch |
 
 ## features
 
@@ -82,34 +81,54 @@ every message earns **10 xp** with a 60-second cooldown to prevent spam. message
 - welcome dm flow for new members
 - server info and countdown commands
 - github webhook announcements with discord account linking
-- elasticsearch-backed project showcase search
+- encrypted project submissions to a separate showcase backend
 
-## project showcase search
+## showcase submission flow
 
-the bot can scrape project posts from one or more configured channels, index them into elasticsearch, and expose:
+`/showcase-project` opens a modal with:
 
-- `GET /api/showcase/search` - elastic-backed search API
-- `GET /api/showcase/health` - quick health and document count check
-- `GET /showcase` - the built frontend dashboard when `frontend/dist` exists
+- project name
+- short description
+- github url
+- live/demo url
+- tags
 
-### how it works
+when the user submits, the bot:
 
-1. set `SHOWCASE_CHANNEL_NAMES` to the channels you want indexed.
-2. configure your elasticsearch credentials.
-3. run `/sync-showcase` once to backfill history.
-4. keep the bot online so new project posts, edits, and deletes stay in sync.
-5. build the frontend and visit `/showcase`, or deploy `frontend/` separately.
+1. builds a structured payload with guild, channel, member, and project metadata
+2. encrypts that payload with a shared Fernet key
+3. sends it to your separate showcase API
+4. returns an ephemeral confirmation to the member
 
-### what gets indexed
+this keeps the showcase UI and storage in a separate repo while making it easy for community members to submit projects from discord.
 
-- project name inferred from the post or github repo
-- summary text from the discord message
-- github link
-- live demo link
-- source discord post url
-- attachments and preview image
-- builder name, username, and avatar
-- guild and channel metadata
+## showcase api contract
+
+the bot sends a `POST` request to `SHOWCASE_SUBMISSION_API_URL` with:
+
+```json
+{
+  "version": 1,
+  "source": "jam-discord-bot",
+  "payload": "gAAAAAB..."
+}
+```
+
+headers:
+
+- `Content-Type: application/json`
+- `Authorization: Bearer ...` when `SHOWCASE_SUBMISSION_BEARER_TOKEN` is set
+- `X-Showcase-Key-Id: ...` when `SHOWCASE_KEY_ID` is set
+- `X-Showcase-Request-Id: ...` for request tracing
+
+the `payload` field is a Fernet-encrypted JSON document containing guild, channel, member, and project metadata. the separate showcase backend should decrypt it with the shared key and can optionally return JSON like:
+
+```json
+{
+  "submission_id": "abc123",
+  "project_url": "https://your-showcase.example.com/projects/abc123"
+}
+```
 
 ## setup
 
@@ -118,7 +137,6 @@ the bot can scrape project posts from one or more configured channels, index the
 - python 3.11+
 - a postgresql database
 - a discord bot token from the [developer portal](https://discord.com/developers/applications)
-- an elasticsearch cluster if you want showcase search enabled
 
 ### install
 
@@ -136,19 +154,22 @@ DATABASE_URL=your_postgres_connection_string
 GITHUB_WEBHOOK_SECRET=your_secure_random_string
 PR_ANNOUNCEMENT_CHANNEL_NAME=testing-announcements
 
-ELASTICSEARCH_URL=https://your-elastic-cluster.example.com
-ELASTICSEARCH_API_KEY=your_api_key_here
-# or:
-# ELASTICSEARCH_USERNAME=elastic
-# ELASTICSEARCH_PASSWORD=your_password_here
-ELASTICSEARCH_INDEX=jam-project-showcase
-
-SHOWCASE_CHANNEL_NAMES=projects
-SHOWCASE_APP_URL=https://your-app.example.com/showcase
-SHOWCASE_ROUTE_PREFIX=/showcase
-SHOWCASE_ACCESS_TOKEN=optional_shared_secret
-SHOWCASE_SYNC_ON_START=false
+SHOWCASE_SUBMISSION_API_URL=https://your-showcase-api.example.com/api/submissions
+SHOWCASE_SUBMISSION_FERNET_KEY=your_fernet_key_here
+SHOWCASE_SUBMISSION_BEARER_TOKEN=optional_api_bearer_token
+SHOWCASE_PUBLIC_URL=https://your-showcase.example.com
+SHOWCASE_SOURCE=jam-discord-bot
+SHOWCASE_KEY_ID=primary
+SHOWCASE_REQUEST_TIMEOUT_SECONDS=10
 ```
+
+generate a Fernet key with:
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+the same key must be configured in your separate showcase backend so it can decrypt incoming submissions.
 
 ### server setup
 
@@ -177,33 +198,13 @@ python bot.py
 
 then run `/setup-welcome` in any channel to post the welcome embeds.
 
-### frontend dashboard
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-set `VITE_SHOWCASE_API_BASE_URL` if you host the frontend separately from the bot API.
-
-to let the bot serve the dashboard itself, build the frontend first:
-
-```bash
-npm --prefix frontend run build
-```
-
-that creates `frontend/dist`, which the bot serves at `/showcase`.
-
 ## deploy
 
-the bot already runs a built-in web server for github webhooks and the showcase API. it includes a `Procfile` for platforms like railway or heroku:
+the bot runs a built-in web server for github webhooks, so it includes a `Procfile` for platforms like railway or heroku:
 
 ```text
 web: python bot.py
 ```
-
-for same-origin showcase hosting, build the frontend during your deploy so `frontend/dist` exists at runtime.
 
 ## tech stack
 
@@ -211,10 +212,9 @@ for same-origin showcase hosting, build the frontend during your deploy so `fron
 |---|---|
 | language | python |
 | bot framework | discord.py |
-| primary database | postgresql |
-| search index | elasticsearch |
-| frontend | react + typescript + vite + shadcn/ui |
-| hosting | railway / heroku / separate static frontend |
+| database | postgresql |
+| encryption | Fernet via `cryptography` |
+| outbound showcase integration | encrypted HTTP POST to your separate showcase API |
 
 ## credits
 
