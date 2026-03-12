@@ -1,6 +1,9 @@
 import os
 import secrets
 import time
+import json
+import hmac
+import hashlib
 from typing import Any
 from urllib.parse import urlparse
 
@@ -10,6 +13,7 @@ from aiohttp import ClientSession, ClientTimeout
 SHOWCASE_SUBMISSION_API_URL = os.getenv("SHOWCASE_SUBMISSION_API_URL", "").strip()
 SHOWCASE_PUBLIC_URL = os.getenv("SHOWCASE_PUBLIC_URL", "").strip()
 SHOWCASE_SOURCE = os.getenv("SHOWCASE_SOURCE", "jam-discord-bot").strip() or "jam-discord-bot"
+SHOWCASE_BOT_SHARED_SECRET = os.getenv("SHOWCASE_BOT_SHARED_SECRET", "").strip()
 
 try:
     SHOWCASE_REQUEST_TIMEOUT_SECONDS = float(
@@ -90,16 +94,30 @@ async def submit_showcase_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if not SHOWCASE_SUBMISSION_API_URL:
         raise ValueError("SHOWCASE_SUBMISSION_API_URL is not configured")
 
+    body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
     headers = {
         "Content-Type": "application/json",
     }
     request_id = payload.get("request_id")
     if request_id:
         headers["X-Showcase-Request-Id"] = str(request_id)
+    if SHOWCASE_BOT_SHARED_SECRET:
+        timestamp = str(int(time.time()))
+        signature = hmac.new(
+            SHOWCASE_BOT_SHARED_SECRET.encode("utf-8"),
+            f"{timestamp}.{body}".encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        headers["X-Showcase-Timestamp"] = timestamp
+        headers["X-Showcase-Bot-Signature"] = f"v1={signature}"
 
     timeout = ClientTimeout(total=max(SHOWCASE_REQUEST_TIMEOUT_SECONDS, 1.0))
     async with ClientSession(timeout=timeout) as session:
-        async with session.post(SHOWCASE_SUBMISSION_API_URL, json=payload, headers=headers) as response:
+        async with session.post(
+            SHOWCASE_SUBMISSION_API_URL,
+            data=body.encode("utf-8"),
+            headers=headers,
+        ) as response:
             response_text = await response.text()
             if response.status >= 400:
                 raise RuntimeError(

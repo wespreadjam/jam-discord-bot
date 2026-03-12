@@ -241,6 +241,7 @@ SHOWCASE_SUBMISSION_API_URL=https://your-showcase-api.example.com/api/submission
 SHOWCASE_PUBLIC_URL=https://your-showcase.example.com
 SHOWCASE_SOURCE=jam-discord-bot
 SHOWCASE_REQUEST_TIMEOUT_SECONDS=10
+SHOWCASE_BOT_SHARED_SECRET=your_shared_bot_secret
 ```
 
 For the current public showcase deployment, the bot only needs `SHOWCASE_SUBMISSION_API_URL` to submit projects. The rest are optional quality-of-life settings:
@@ -248,8 +249,9 @@ For the current public showcase deployment, the bot only needs `SHOWCASE_SUBMISS
 - `SHOWCASE_PUBLIC_URL` lets the bot include the public site link in its confirmation message
 - `SHOWCASE_SOURCE` tags the payload source
 - `SHOWCASE_REQUEST_TIMEOUT_SECONDS` controls how long the bot waits for the API
+- `SHOWCASE_BOT_SHARED_SECRET` lets the showcase API verify that the request came from the bot and skip the public curl rate limit
 
-No cryptographic key, bearer token, or extra showcase auth secret is required by the current API flow.
+No encrypted payload flow is required. If you want the bot to bypass the public rate limit, configure the same `SHOWCASE_BOT_SHARED_SECRET` in both the bot and the showcase site.
 
 ### showcase site requirements
 
@@ -258,6 +260,7 @@ For `/showcase-project` to work end-to-end, the separate showcase site needs:
 - `NEXT_PUBLIC_SUPABASE_URL`
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 - `SUPABASE_SERVICE_ROLE_KEY`
+- `SHOWCASE_BOT_SHARED_SECRET`
 
 and these Supabase migrations applied:
 
