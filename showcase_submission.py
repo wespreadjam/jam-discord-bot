@@ -8,7 +8,6 @@ from aiohttp import ClientSession, ClientTimeout
 
 
 SHOWCASE_SUBMISSION_API_URL = os.getenv("SHOWCASE_SUBMISSION_API_URL", "").strip()
-SHOWCASE_SUBMISSION_BEARER_TOKEN = os.getenv("SHOWCASE_SUBMISSION_BEARER_TOKEN", "").strip()
 SHOWCASE_PUBLIC_URL = os.getenv("SHOWCASE_PUBLIC_URL", "").strip()
 SHOWCASE_SOURCE = os.getenv("SHOWCASE_SOURCE", "jam-discord-bot").strip() or "jam-discord-bot"
 
@@ -21,7 +20,7 @@ except ValueError:
 
 
 def showcase_submission_enabled() -> bool:
-    return bool(SHOWCASE_SUBMISSION_API_URL and SHOWCASE_SUBMISSION_BEARER_TOKEN)
+    return bool(SHOWCASE_SUBMISSION_API_URL)
 
 
 def get_showcase_public_url() -> str:
@@ -90,12 +89,9 @@ def build_showcase_payload(
 async def submit_showcase_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if not SHOWCASE_SUBMISSION_API_URL:
         raise ValueError("SHOWCASE_SUBMISSION_API_URL is not configured")
-    if not SHOWCASE_SUBMISSION_BEARER_TOKEN:
-        raise ValueError("SHOWCASE_SUBMISSION_BEARER_TOKEN is not configured")
 
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {SHOWCASE_SUBMISSION_BEARER_TOKEN}",
     }
     request_id = payload.get("request_id")
     if request_id:

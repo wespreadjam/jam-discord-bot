@@ -199,7 +199,6 @@ the bot sends a `POST` request to `SHOWCASE_SUBMISSION_API_URL` with:
 headers:
 
 - `Content-Type: application/json`
-- `Authorization: Bearer ...`
 - `X-Showcase-Request-Id: ...` for request tracing
 
 the separate showcase API can validate, sanitize, and insert that payload server-side, and can optionally return JSON like:
@@ -237,7 +236,6 @@ GITHUB_WEBHOOK_SECRET=your_secure_random_string
 PR_ANNOUNCEMENT_CHANNEL_NAME=testing-announcements
 
 SHOWCASE_SUBMISSION_API_URL=https://your-showcase-api.example.com/api/submissions
-SHOWCASE_SUBMISSION_BEARER_TOKEN=your_api_bearer_token
 SHOWCASE_PUBLIC_URL=https://your-showcase.example.com
 SHOWCASE_SOURCE=jam-discord-bot
 SHOWCASE_REQUEST_TIMEOUT_SECONDS=10
