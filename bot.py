@@ -33,6 +33,18 @@ from psycopg2 import sql
 from contextlib import contextmanager
 from aiohttp import web
 
+from showcase import (
+    configure_showcase,
+    delete_showcase_document,
+    get_showcase_route,
+    init_showcase_index,
+    register_showcase_routes,
+    should_sync_on_start,
+    showcase_enabled,
+    sync_showcase_for_guild,
+    upsert_showcase_message,
+)
+
 # ---------------------------------------------------------------------------
 # Configuration - edit these to customize your bot
 # ---------------------------------------------------------------------------
@@ -307,6 +319,24 @@ xp_cooldowns: dict[int, float] = {}
 # cached invite uses per guild: {guild_id: {invite_code: uses}}
 invite_cache: dict[int, dict[str, int]] = {}
 invite_lock = asyncio.Lock()
+showcase_startup_sync_done = False
+
+
+async def run_startup_showcase_sync():
+    global showcase_startup_sync_done
+    if showcase_startup_sync_done or not should_sync_on_start():
+        return
+
+    showcase_startup_sync_done = True
+    for guild in bot.guilds:
+        try:
+            stats = await sync_showcase_for_guild(guild)
+            print(
+                f"showcase sync complete for {guild.name}: "
+                f"{stats['indexed']} indexed from {stats['scanned']} scanned"
+            )
+        except Exception as e:
+            print(f"showcase sync failed for {guild.name}: {e}")
 
 
 async def sync_roles(member: discord.Member, new_level: int):
@@ -467,6 +497,11 @@ async def dm_welcome(member: discord.Member, invite_url: str = None):
 @bot.event
 async def on_ready():
     init_db()
+    configure_showcase(bot)
+    try:
+        init_showcase_index()
+    except Exception as e:
+        print(f"failed to initialize showcase index: {e}")
     # cache invites for all guilds
     for guild in bot.guilds:
         await cache_invites(guild)
@@ -475,6 +510,8 @@ async def on_ready():
         print(f"synced {len(synced)} slash commands")
     except Exception as e:
         print(f"failed to sync commands: {e}")
+    if should_sync_on_start():
+        bot.loop.create_task(run_startup_showcase_sync())
     print(f"jam bot is online as {bot.user}")
 
 
@@ -609,6 +646,12 @@ async def on_message(message: discord.Message):
         await bot.process_commands(message)
         return
 
+    if showcase_enabled():
+        try:
+            await upsert_showcase_message(message)
+        except Exception as e:
+            print(f"showcase index failed for message {message.id}: {e}")
+
     user_id = message.author.id
     member = guild.get_member(user_id)
 
@@ -681,6 +724,26 @@ async def on_message(message: discord.Message):
             await sync_roles(member, new_level)
 
     await bot.process_commands(message)
+
+
+@bot.event
+async def on_message_edit(before: discord.Message, after: discord.Message):
+    if after.author.bot:
+        return
+    if showcase_enabled():
+        try:
+            await upsert_showcase_message(after)
+        except Exception as e:
+            print(f"showcase reindex failed for message {after.id}: {e}")
+
+
+@bot.event
+async def on_raw_message_delete(payload: discord.RawMessageDeleteEvent):
+    if showcase_enabled():
+        try:
+            delete_showcase_document(payload.message_id)
+        except Exception as e:
+            print(f"showcase delete failed for message {payload.message_id}: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -1154,6 +1217,54 @@ async def serverinfo(interaction: discord.Interaction):
         await interaction.followup.send("something went wrong, check the logs!", ephemeral=True)
 
 
+@bot.tree.command(name="sync-showcase", description="(admin) index project posts into the showcase search index")
+@app_commands.describe(limit="max messages to scan per tracked channel, or 0 for full history")
+@app_commands.checks.has_permissions(administrator=True)
+async def sync_showcase(interaction: discord.Interaction, limit: int = 0):
+    await interaction.response.defer(ephemeral=True)
+    if interaction.guild is None:
+        await interaction.followup.send("this only works in a server!", ephemeral=True)
+        return
+
+    if not showcase_enabled():
+        await interaction.followup.send(
+            "showcase search is disabled. set `ELASTICSEARCH_URL` (and auth if needed) first.",
+            ephemeral=True,
+        )
+        return
+
+    try:
+        stats = await sync_showcase_for_guild(interaction.guild, limit=limit or None)
+        route = get_showcase_route(interaction.guild.id)
+        await interaction.followup.send(
+            (
+                f"indexed **{stats['indexed']}** project messages from **{stats['scanned']}** scanned messages "
+                f"across **{stats['channels']}** tracked channel(s).\n"
+                f"dashboard: {route}\n"
+                f"missing channels: {', '.join(stats['missing']) if stats['missing'] else 'none'}"
+            ),
+            ephemeral=True,
+        )
+    except Exception as e:
+        print(f"error in /sync-showcase: {e}")
+        await interaction.followup.send("showcase sync failed. check the logs.", ephemeral=True)
+
+
+@bot.tree.command(name="showcase-link", description="get the project showcase dashboard link")
+async def showcase_link(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    if interaction.guild is None:
+        await interaction.followup.send("this only works in a server!", ephemeral=True)
+        return
+
+    route = get_showcase_route(interaction.guild.id)
+    status = "enabled" if showcase_enabled() else "disabled until Elasticsearch is configured"
+    await interaction.followup.send(
+        f"showcase route: {route}\nstatus: {status}",
+        ephemeral=True,
+    )
+
+
 @bot.tree.command(name="countdown", description="start a countdown embed to an upcoming event")
 @app_commands.describe(
     event="name of the event",
@@ -1288,6 +1399,7 @@ async def github_webhook(request):
 async def web_server():
     app = web.Application()
     app.router.add_post("/github-webhook", github_webhook)
+    register_showcase_routes(app)
     runner = web.AppRunner(app)
     await runner.setup()
     
