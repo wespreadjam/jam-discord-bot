@@ -164,6 +164,8 @@ when the user submits, the bot:
 2. sends that payload to your separate showcase API as JSON
 3. returns an ephemeral confirmation to the member
 
+The intended product flow is Discord-first: community members share their project from inside the server with `/showcase-project`, and the public showcase site lists it. The showcase site can also accept direct manual submissions through its public API, but the bot path is the main one.
+
 ### api contract
 
 the bot sends a `POST` request to `SHOWCASE_SUBMISSION_API_URL` with:
@@ -240,6 +242,27 @@ SHOWCASE_PUBLIC_URL=https://your-showcase.example.com
 SHOWCASE_SOURCE=jam-discord-bot
 SHOWCASE_REQUEST_TIMEOUT_SECONDS=10
 ```
+
+For the current public showcase deployment, the bot only needs `SHOWCASE_SUBMISSION_API_URL` to submit projects. The rest are optional quality-of-life settings:
+
+- `SHOWCASE_PUBLIC_URL` lets the bot include the public site link in its confirmation message
+- `SHOWCASE_SOURCE` tags the payload source
+- `SHOWCASE_REQUEST_TIMEOUT_SECONDS` controls how long the bot waits for the API
+
+No cryptographic key, bearer token, or extra showcase auth secret is required by the current API flow.
+
+### showcase site requirements
+
+For `/showcase-project` to work end-to-end, the separate showcase site needs:
+
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `SUPABASE_SERVICE_ROLE_KEY`
+
+and these Supabase migrations applied:
+
+- `202603120001_projects.sql`
+- `202603120002_submission_rate_limits.sql`
 
 ### server setup
 
