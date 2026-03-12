@@ -33,7 +33,7 @@ jam bot is a discord bot that gamifies your community. it tracks messages, award
 
 it also handles onboarding. new members have to introduce themselves and share a project before they get verified. no lurkers allowed (well, fewer lurkers).
 
-this branch also adds `/showcase-project`, which opens a modal and sends an encrypted project submission to a separate showcase backend that you host elsewhere.
+this branch also adds `/showcase-project`, which opens a modal and sends a project submission to a separate showcase API that you host elsewhere.
 
 ## how it works
 
@@ -161,9 +161,8 @@ a magic 8-ball with 20 possible responses — some positive, some uncertain, som
 when the user submits, the bot:
 
 1. builds a structured payload with guild, channel, member, and project metadata
-2. encrypts that payload with a shared Fernet key
-3. sends it to your separate showcase API
-4. returns an ephemeral confirmation to the member
+2. sends that payload to your separate showcase API with a bearer token
+3. returns an ephemeral confirmation to the member
 
 ### api contract
 
@@ -173,23 +172,43 @@ the bot sends a `POST` request to `SHOWCASE_SUBMISSION_API_URL` with:
 {
   "version": 1,
   "source": "jam-discord-bot",
-  "payload": "gAAAAAB..."
+  "request_id": "abc123",
+  "guild": {
+    "id": "123",
+    "name": "Jam"
+  },
+  "channel": {
+    "id": "456",
+    "name": "projects"
+  },
+  "member": {
+    "id": "789",
+    "username": "paul",
+    "display_name": "Paul"
+  },
+  "project": {
+    "name": "Jam AI Copilot",
+    "description": "A short summary people will see in the showcase.",
+    "github_url": "https://github.com/you/repo",
+    "live_url": "https://your-project.com",
+    "tags": ["ai", "automation"]
+  }
 }
 ```
 
 headers:
 
 - `Content-Type: application/json`
-- `Authorization: Bearer ...` when `SHOWCASE_SUBMISSION_BEARER_TOKEN` is set
-- `X-Showcase-Key-Id: ...` when `SHOWCASE_KEY_ID` is set
+- `Authorization: Bearer ...`
 - `X-Showcase-Request-Id: ...` for request tracing
 
-the `payload` field is a Fernet-encrypted JSON document containing guild, channel, member, and project metadata. the separate showcase backend should decrypt it with the shared key and can optionally return JSON like:
+the separate showcase API can validate, sanitize, and insert that payload server-side, and can optionally return JSON like:
 
 ```json
 {
-  "submission_id": "abc123",
-  "project_url": "https://your-showcase.example.com/projects/abc123"
+  "id": "abc123",
+  "slug": "jam-ai-copilot",
+  "showcase_url": "https://your-showcase.example.com/#projects"
 }
 ```
 
@@ -218,21 +237,11 @@ GITHUB_WEBHOOK_SECRET=your_secure_random_string
 PR_ANNOUNCEMENT_CHANNEL_NAME=testing-announcements
 
 SHOWCASE_SUBMISSION_API_URL=https://your-showcase-api.example.com/api/submissions
-SHOWCASE_SUBMISSION_FERNET_KEY=your_fernet_key_here
-SHOWCASE_SUBMISSION_BEARER_TOKEN=optional_api_bearer_token
+SHOWCASE_SUBMISSION_BEARER_TOKEN=your_api_bearer_token
 SHOWCASE_PUBLIC_URL=https://your-showcase.example.com
 SHOWCASE_SOURCE=jam-discord-bot
-SHOWCASE_KEY_ID=primary
 SHOWCASE_REQUEST_TIMEOUT_SECONDS=10
 ```
-
-generate a Fernet key with:
-
-```bash
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-```
-
-the same key must be configured in your separate showcase backend so it can decrypt incoming submissions.
 
 ### server setup
 

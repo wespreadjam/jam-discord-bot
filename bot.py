@@ -100,8 +100,8 @@ PR_ANNOUNCEMENT_CHANNEL_NAME = os.getenv("PR_ANNOUNCEMENT_CHANNEL_NAME", "testin
 # ---------------------------------------------------------------------------
 # Showcase Submission Configuration
 # ---------------------------------------------------------------------------
-# This bot submits projects to a separate showcase API using encrypted payloads.
-# Configure the API URL and Fernet key in the environment to enable /showcase-project.
+# This bot submits projects to a separate showcase API using authenticated JSON.
+# Configure the API URL and bearer token in the environment to enable /showcase-project.
 
 # ---------------------------------------------------------------------------
 # Database setup (PostgreSQL)
@@ -430,7 +430,7 @@ class ShowcaseProjectModal(discord.ui.Modal, title="Submit a Project"):
             )
             return
 
-        response_url = result.get("project_url") or result.get("url")
+        response_url = result.get("showcase_url") or result.get("project_url") or result.get("url")
         submission_id = result.get("submission_id") or result.get("id")
         public_url = get_showcase_public_url()
 
